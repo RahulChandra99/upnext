@@ -1,0 +1,17 @@
+{
+  "category": "apps",
+  "items": [
+    {
+      "title": "Upnext",
+      "summary": "Binge-watch your own shows from Google Drive in VLC, with the next episode always ready and English subtitles handled.",
+      "highlights": [
+        "Prefetches the next episode while you watch and shows a countdown the second the end credits start, found with ffmpeg black frame detection",
+        "Finds English subtitles on OpenSubtitles, syncs them to the speech with ffsubsync, or generates them with Whisper on the Apple Silicon GPU, then embeds them in the file",
+        "Desktop app on FastAPI and pywebview that drives VLC through its web interface, so it works on macOS, Windows and Linux"
+      ],
+      "tags": ["Python", "FastAPI", "pywebview", "rclone", "ffmpeg", "Whisper", "MLX", "VLC"],
+      "image": "assets/screenshot.png",
+      "status": "hidden"
+    }
+  ]
+}
