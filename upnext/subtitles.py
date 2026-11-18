@@ -36,7 +36,7 @@ EMBEDDABLE = {".mkv": "srt", ".mp4": "mov_text", ".m4v": "mov_text", ".mov": "mo
 
 def streams(video):
     out = subprocess.run([ffprobe(), "-v", "error", "-show_entries",
-                          "stream=index,codec_type,codec_name:stream_tags=language,title:format=duration",
+                          "stream=index,codec_type,codec_name:stream_tags=language,title,name,handler_name:format=duration",
                           "-of", "json", str(video)], capture_output=True, text=True)
     data = json.loads(out.stdout or "{}")
     found = data.get("streams", [])
@@ -46,9 +46,27 @@ def streams(video):
     return found, float(data.get("format", {}).get("duration") or 0)
 
 
-def english_tracks(video):
+def is_ours(stream):
+    # MKV keeps the name as "title", MP4 as "name" or "handler_name"
+    tags = stream.get("tags", {})
+    return OUR_TITLE in (tags.get("title"), tags.get("name"), tags.get("handler_name"))
+
+
+def english_tracks(video, full_only=False):
+    """English subtitle tracks inside the file. With full_only, only text tracks with
+    real dialogue count: picture-based DVD/Blu-ray tracks can't be synced or reused,
+    and a 1-line "forced" track (signs and foreign speech only) isn't subtitles for the episode."""
     subs = [s for s in streams(video)[0] if s.get("codec_type") == "subtitle"]
-    return [s for s in subs if (s.get("tags", {}).get("language") or "").lower() in ("eng", "en", "english")]
+    eng = [s for s in subs if (s.get("tags", {}).get("language") or "").lower() in ("eng", "en", "english")]
+    if not full_only:
+        return eng
+    return [s for s in eng if s.get("codec_name") in TEXT_CODECS and (is_ours(s) or _cue_count(video, s["index"]) >= 50)]
+
+
+def _cue_count(video, index):
+    out = subprocess.run([ffmpeg(), "-v", "error", "-i", str(video), "-map", f"0:{index}", "-f", "srt", "-"],
+                         capture_output=True, text=True)
+    return out.stdout.count("-->")
 
 
 def sidecar(video):
@@ -65,12 +83,12 @@ def existing_sidecar(video):
 
 
 def describe(video):
-    """Subtitle state for the UI."""
-    eng = english_tracks(video)
+    """Subtitle state for the UI. Only tracks that can actually be used are listed."""
+    eng = english_tracks(video, full_only=True)
     side = existing_sidecar(video)
     return {
-        "embedded": [{"index": s["index"], "codec": s.get("codec_name"), "title": s.get("tags", {}).get("title", ""),
-                      "ours": s.get("tags", {}).get("title") == OUR_TITLE} for s in eng],
+        "embedded": [{"index": s["index"], "codec": s.get("codec_name"), "title": s["tags"].get("title") or s["tags"].get("name") or "",
+                      "ours": is_ours(s)} for s in eng],
         "sidecar": str(side) if side else None,
         "can_embed": Path(video).suffix.lower() in EMBEDDABLE,
     }
@@ -167,12 +185,19 @@ def _decode(raw):
 
 # --- syncing and shifting -------------------------------------------------------
 
+MAX_OFFSET = 60
+
+
 def sync(job, video, srt_in, srt_out):
-    """Line the subtitles up with the speech in the audio (ffsubsync). Returns the offset it found."""
+    """Line the subtitles up with the speech in the audio (ffsubsync). Returns the offset it found.
+    Leaves srt_out untouched when ffsubsync's answer can't be trusted."""
     exe = Path(sys.executable).with_name("ffsubsync")
     tmp = Path(srt_out).with_suffix(".sync.tmp.srt")
     job.update(None, "Syncing to the audio", "Listening for speech and matching it to the subtitle timings")
     proc = subprocess.Popen([str(exe), str(video), "-i", str(srt_in), "-o", str(tmp),
+                             "--max-offset-seconds", str(MAX_OFFSET),
+                             # its frame-rate guessing turned S07E04's plain 84s offset into 38-120s of drift
+                             "--no-fix-framerate",
                              "--ffmpeg-path", str(Path(ffmpeg()).parent)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     job.proc = proc
@@ -183,10 +208,16 @@ def sync(job, video, srt_in, srt_out):
     if proc.returncode != 0 or not tmp.exists():
         tail = [l for l in log.splitlines() if l.strip()][-1:] or ["unknown error"]
         raise RuntimeError(f"Sync failed: {tail[0][-200:]}")
-    tmp.replace(srt_out)
     m = re.search(r"offset seconds:\s*(-?[\d.]+)", log)
     scale = re.search(r"framerate scale factor:\s*([\d.]+)", log)
     offset = float(m.group(1)) if m else 0.0
+    if abs(offset) >= MAX_OFFSET - 0.5:
+        # Pinned at the limit means no real match was found. S07E04's .srt was 84s
+        # late and this used to write a -60s "fix" that was still 24s off.
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"Couldn't find a reliable match (stopped at the {MAX_OFFSET}s limit). Nothing was changed. "
+                           "The subtitles may be off by more than a minute, or be for a different cut of the episode")
+    tmp.replace(srt_out)
     msg = f"Synced, moved by {offset:+.2f}s"
     if scale and abs(float(scale.group(1)) - 1) > 0.001:
         msg += f" and corrected the frame rate ({float(scale.group(1)):.4f}x)"
@@ -369,12 +400,13 @@ def embed(job, video, srt_file):
     args = [ffmpeg(), "-y", "-v", "error", "-i", str(video), "-i", str(srt_file), "-map", "0"]
     kept = 0
     for i, s in enumerate(subs):
-        if s.get("tags", {}).get("title") == OUR_TITLE:
+        if is_ours(s):
             args += ["-map", f"-0:s:{i}"]
         else:
             kept += 1
     args += ["-map", "1", "-c", "copy", f"-c:s:{kept}", codec,
-             f"-metadata:s:s:{kept}", "language=eng", f"-metadata:s:s:{kept}", f"title={OUR_TITLE}"]
+             f"-metadata:s:s:{kept}", "language=eng", f"-metadata:s:s:{kept}", f"title={OUR_TITLE}",
+             f"-metadata:s:s:{kept}", f"handler_name={OUR_TITLE}"]
     for i in range(kept):
         args += [f"-disposition:s:{i}", "0"]
     args += [f"-disposition:s:{kept}", "default"]
@@ -412,16 +444,14 @@ def _title(video, what):
 def queue_auto(video):
     def run(job):
         s = config.load()
-        if english_tracks(video):
+        if english_tracks(video, full_only=True):
             job.update(1, "Already has English subtitles inside")
             return
         out = sidecar(video)
         source = None
         existing = existing_sidecar(video)
         if existing:
-            if existing != out:
-                shutil.copyfile(existing, out)
-            sync(job, video, out, out)
+            sync(job, video, existing, out)
             source = "your .srt, synced"
         elif s["opensubtitles_api_key"].strip():
             job.update(None, "Searching OpenSubtitles")
@@ -476,9 +506,7 @@ def queue_sync(video, stream_index=None):
             src = existing_sidecar(video)
             if not src:
                 raise RuntimeError("No subtitles to sync. Find or generate some first")
-            if src != out:
-                shutil.copyfile(src, out)
-        offset = sync(job, video, out, out)
+        offset = sync(job, video, out if stream_index is not None else src, out)
         if config.load()["embed_subtitles"] and Path(video).suffix.lower() in EMBEDDABLE:
             embed(job, video, out)
         job.update(1, f"Synced ({offset:+.2f}s)")
