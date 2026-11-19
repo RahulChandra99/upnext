@@ -126,6 +126,12 @@ def subtitle_info(path: str):
     return subtitles.describe(path)
 
 
+@app.get("/api/ready")
+def ready(path: str):
+    """Asked by the Up Next card: is the next episode downloaded and are its subtitles done?"""
+    return subtitles.readiness(path)
+
+
 @app.get("/api/subtitles/search")
 def subtitle_search(path: str):
     try:

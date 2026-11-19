@@ -2,6 +2,7 @@
 
 Two lanes: downloads run two at a time, subtitle work runs one at a time
 (syncing and Whisper are CPU heavy and would fight over the cores).
+Urgent jobs (the episode you're about to watch) go ahead of everything queued.
 """
 
 import itertools
@@ -14,7 +15,7 @@ _ids = itertools.count(1)
 _jobs = {}
 _lock = threading.Lock()
 LANES = {"download": 2, "subtitles": 1}
-_queues = {lane: queue.Queue() for lane in LANES}
+_queues = {lane: queue.PriorityQueue() for lane in LANES}
 
 
 class Cancelled(Exception):
@@ -50,16 +51,19 @@ class Job:
                 ("id", "lane", "kind", "title", "status", "progress", "message", "detail", "created", "finished", "key")}
 
 
-def submit(lane, kind, title, fn, key=None):
-    """Queue fn(job). A job with the same key that's still queued or running is reused."""
+def submit(lane, kind, title, fn, key=None, urgent=False):
+    """Queue fn(job). A job with the same key that's still queued or running is reused
+    (and moved to the front if this request is urgent)."""
     with _lock:
         if key:
             for j in _jobs.values():
                 if j.key == key and j.status in ("queued", "running"):
+                    if urgent and j.status == "queued":
+                        _queues[lane].put((0, j.id, j))  # the old entry is skipped once this one runs
                     return j
         job = Job(lane, kind, title, fn, key)
         _jobs[job.id] = job
-    _queues[lane].put(job)
+    _queues[lane].put((0 if urgent else 1, job.id, job))
     return job
 
 
@@ -105,8 +109,8 @@ def clear_finished():
 def _worker(lane):
     q = _queues[lane]
     while True:
-        job = q.get()
-        if job.status == "cancelled":
+        _, _, job = q.get()
+        if job.status != "queued":  # cancelled, or a duplicate entry from being made urgent
             continue
         job.status, job.message = "running", "Starting"
         try:

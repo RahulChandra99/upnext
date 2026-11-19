@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import srt  # noqa: E402
 
-from upnext import align, credits, names, subtitles  # noqa: E402
+from upnext import align, credits, jobs, names, subtitles  # noqa: E402
 
 
 def test_names():
@@ -114,9 +114,22 @@ def test_ads():
     assert not align.is_ad("Bad things are coming.")
 
 
+def test_urgent_jobs_first():
+    # a season's subtitles are queued, then the episode you're about to watch jumps ahead
+    a = jobs.submit("subtitles", "t", "E05", lambda j: None, key="t:5")
+    b = jobs.submit("subtitles", "t", "E06", lambda j: None, key="t:6")
+    jobs.submit("subtitles", "t", "E06", lambda j: None, key="t:6", urgent=True)  # bump b
+    c = jobs.submit("subtitles", "t", "E07", lambda j: None, key="t:7", urgent=True)
+    q = jobs._queues["subtitles"]
+    order = [q.get()[2] for _ in range(q.qsize())]
+    assert order == [b, c, a, b]  # the stale entry for b comes last and the worker skips it
+    for j in (a, b, c):
+        jobs.cancel(j.id)
+
+
 if __name__ == "__main__":
     import tempfile
-    test_names(); test_credits_length(); test_wrap(); test_lines_from_words()
+    test_names(); test_credits_length(); test_wrap(); test_lines_from_words(); test_urgent_jobs_first()
     test_align_constant_offset(); test_align_speed(); test_align_cut(); test_align_wrong_episode(); test_ads()
     with tempfile.TemporaryDirectory() as d:
         test_shift(Path(d))

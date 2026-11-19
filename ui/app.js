@@ -108,7 +108,7 @@ function nextLine(a) {
   const j = n.target && activeJob("download:" + n.target);
   if (n.local) st = `<span class="state local">${ICON.check} Ready</span>`;
   else if (j) st = `<span class="state busy">Downloading ${j.progress != null ? Math.round(j.progress * 100) + "%" : ""}</span>`;
-  else if (n.remote) st = `<span class="state remote">Downloads with ${S.settings ? S.settings.prefetch_minutes : 15} min left</span>`;
+  else if (n.remote) st = `<span class="state remote">Downloads with ${S.settings ? S.settings.prefetch_minutes : 20} min left</span>`;
   else st = "";
   return `<span>Next: <strong>${esc(n.label)}</strong> ${st}</span>`;
 }
@@ -363,7 +363,7 @@ function renderSettings() {
     </div>
     <div class="card"><h2>Downloads</h2><div>
       ${text("download_dir", "Download folder", "Episodes go in Show / Season NN folders inside this. Episodes already in it show up in the Library.")}
-      ${numr("prefetch_minutes", "Get the next episode early", "Start downloading the next episode when this much of the current one is left.", "min left")}
+      ${numr("prefetch_minutes", "Get the next episode early", "Start downloading the next episode when this much of the current one is left. Leave enough time for its subtitles too: the next episode only autoplays once they're ready.", "min left")}
     </div></div>
     <div class="card"><h2>Playback</h2><div>
       ${sw("autoplay", "Play the next episode automatically", "Shows an Up Next countdown, then plays it in VLC.")}

@@ -10,7 +10,7 @@ I built it with Claude Code. It started as a 100-line script that pre-downloaded
 
 - **Library.** Paste one or more Drive folder links. Upnext reads every video in them, works out the show, season and episode from messy release names (`Game.of.Thrones.S06E05.The.Door.1080p…`, `breaking_bad_3x07`, `Show/Season 2/S02E01.mkv`) and lists them by show and season. Episodes already on your computer show up too.
 - **Downloads.** One episode or a whole season, with live progress. rclone pulls 16 streams at once, which measured about 4x faster than one (10 vs 2.6 MB/s on my connection, 45 MB/s on a better one).
-- **Autopilot.** While VLC plays, Upnext downloads the next episode once 15 minutes are left. When the credits start it shows an Up Next card with a countdown, then plays the next episode, fullscreen if you were. After a season finale it moves on to the next season.
+- **Autopilot.** While VLC plays, Upnext downloads the next episode once 20 minutes are left, and its subtitles straight after, both ahead of anything else queued. If the next episode is already on disk, its subtitles start as soon as you press play. When the credits start it shows an Up Next card, and the countdown doesn't begin until the next episode is downloaded and its subtitles are done (the card says what it's waiting on). Then it plays, fullscreen if you were. Play Now skips the subtitle wait. After a season finale it moves on to the next season.
 - **Credits detection.** Most shows end on white text over black. ffmpeg's `blackdetect` scans the last six minutes, and the run of black stretches that lasts to the end is the credits. On S06E05 it found the cut to the exact second (55:25).
 - **Subtitles.** For each episode, in this order:
   1. An English track already inside the file: leave it alone.
@@ -87,6 +87,6 @@ Covers name parsing, the credits rule on S06E05's measured black stretches, subt
 ## Known gaps
 
 - Picture-based subtitles (PGS from Blu-rays) can't be synced, only text ones.
-- If the next episode's subtitles are still generating when it starts, VLC won't pick them up until you reopen the file.
+- If subtitles fail for the next episode (no match and generating turned off, say), it plays without them rather than waiting forever.
 - The OpenSubtitles free tier allows a handful of downloads a day.
 - English only for now.

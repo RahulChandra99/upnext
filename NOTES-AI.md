@@ -45,3 +45,7 @@ Built the method from the S07E04 fix into the Sync button (`align.py`). Lines ar
 **My first comparison said one line was 895 seconds off.** It wasn't. The check looked lines up by their text, and lines like "Yes." appear more than once. Compared in order, every line matched. Worth remembering before trusting or panicking about a "max error".
 
 **Sync picked the file for me.** With both `.srt` and `.en.srt` next to the video it always took `.en.srt`, which was the wrong one when I wanted mine synced. The Sync card now has a picker with every `.srt` for that episode and any text track inside it.
+
+## 2026-11-19, subtitles ready before the next episode
+
+**Shipped a race as a "known gap".** The first Upnext queued subtitles after the download and autoplayed whenever the download finished, so an episode could start while Whisper was still working and VLC never picked the subtitles up. It was written down in the README instead of fixed. Now the Up Next card asks the app whether the episode's subtitle job is done and holds the countdown until it is. The next episode's download and subtitles are also marked urgent so they jump a queued season, and the prefetch default went from 15 to 20 minutes so the wait is rare: download plus Whisper small is about 8 minutes on my connection.

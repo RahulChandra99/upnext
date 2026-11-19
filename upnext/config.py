@@ -12,12 +12,14 @@ CONFIG_DIR = Path(user_config_dir("Upnext", appauthor=False))
 DATA_DIR = Path(user_data_dir("Upnext", appauthor=False))
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 
+PORT = 8765  # the local server the UI and the Up Next card talk to
+
 DEFAULTS = {
     "rclone_remote": "gdrive",
     # Drive folders to read shows from: [{"name": "...", "folder_id": "..."}]
     "sources": [],
     "download_dir": str(Path.home() / "Movies" / "Upnext"),
-    "prefetch_minutes": 15,
+    "prefetch_minutes": 20,
     "countdown_seconds": 15,
     "autoplay": True,
     "detect_credits": True,

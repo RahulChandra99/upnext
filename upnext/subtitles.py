@@ -90,6 +90,23 @@ def srt_files(video):
                   key=lambda p: (p != sidecar(video), p.name))
 
 
+def readiness(video):
+    """Whether an episode can start with its subtitles. Not ready while it's still
+    downloading or any subtitle job for it is queued or running."""
+    if jobs.active(f"download:{video}") or not Path(video).exists():
+        return {"ready": False, "message": "Downloading the episode"}
+    job = jobs.active(f"subs:{video}")
+    if job:
+        pct = f" {job.progress * 100:.0f}%" if job.progress else ""
+        return {"ready": False, "message": f"Subtitles: {job.message}{pct}" if job.status == "running" else "Subtitles: waiting their turn"}
+    return {"ready": True, "message": ""}
+
+
+def needs_subtitles(video):
+    """No usable English yet: no .en.srt from Upnext and no full English track inside."""
+    return not sidecar(video).exists() and not english_tracks(video, full_only=True)
+
+
 def describe(video):
     """Subtitle state for the UI. Only tracks that can actually be used are listed."""
     eng = english_tracks(video, full_only=True)
@@ -510,7 +527,7 @@ def _title(video, what):
     return f"{what} · {name}"
 
 
-def queue_auto(video):
+def queue_auto(video, urgent=False):
     def run(job):
         s = config.load()
         if english_tracks(video, full_only=True):
@@ -548,7 +565,7 @@ def queue_auto(video):
             embed(job, video, out)
         job.update(1, f"English subtitles ready ({source})")
 
-    return jobs.submit("subtitles", "subtitles", _title(video, "Subtitles"), run, key=f"subs:{video}")
+    return jobs.submit("subtitles", "subtitles", _title(video, "Subtitles"), run, key=f"subs:{video}", urgent=urgent)
 
 
 def queue_fetch(video, file_id, hash_match=False):

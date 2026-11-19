@@ -16,7 +16,9 @@ from pathlib import Path
 import requests
 import uvicorn
 
-PORT = 8765
+from upnext import config  # noqa: E402
+
+PORT = config.PORT
 ROOT = Path(__file__).resolve().parent.parent
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from . import config, drive, jobs, library, names
 
 
-def queue_episode(series_name, ep, then_subtitles=None):
+def queue_episode(series_name, ep, then_subtitles=None, urgent=False):
     """Queue a download for one library episode. Returns the job, or None if it's already on disk."""
     if ep.get("local") or not ep.get("remote"):
         return None
@@ -21,10 +21,10 @@ def queue_episode(series_name, ep, then_subtitles=None):
         library.add_local(dest)
         if then_subtitles:
             from . import subtitles
-            subtitles.queue_auto(str(dest))
+            subtitles.queue_auto(str(dest), urgent=urgent)
         return {"path": str(dest)}
 
-    return jobs.submit("download", "download", title, run, key=f"download:{dest}")
+    return jobs.submit("download", "download", title, run, key=f"download:{dest}", urgent=urgent)
 
 
 def download(job, remote, dest):
