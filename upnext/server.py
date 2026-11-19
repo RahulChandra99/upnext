@@ -146,7 +146,10 @@ def subtitle_action(action: str, body: dict = Body(...)):
     elif action == "fetch":
         job = subtitles.queue_fetch(path, int(body["file_id"]), bool(body.get("hash_match")))
     elif action == "sync":
-        job = subtitles.queue_sync(path, body.get("stream_index"))
+        srt_file = body.get("srt_file")
+        if srt_file and (Path(srt_file).parent != Path(path).parent or not srt_file.endswith(".srt")):
+            raise HTTPException(400, "Pick a subtitle file from the episode's folder")
+        job = subtitles.queue_sync(path, body.get("stream_index"), srt_file)
     elif action == "shift":
         job = subtitles.queue_shift(path, float(body["seconds"]))
     elif action == "generate":

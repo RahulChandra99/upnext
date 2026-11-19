@@ -251,8 +251,8 @@ function renderSubtitles() {
         <p class="hint">Fix automatically uses a subtitle already here if there is one, otherwise finds one online, syncs it to the speech, and falls back to generating one with Whisper. The result is saved next to the video and added inside it as the default English track.</p>
       </div>
       <div class="tools" style="margin-top:16px">
-        <div class="tool"><h2>Sync to the audio</h2><p>For subtitles that start early or late, or drift. Matches them to when people actually speak.</p>
-          <div class="inline">${info && info.embedded.length && !info.sidecar ? `<button class="btn" data-sa="sync" data-stream="${info.embedded[0].index}" ${busy ? "disabled" : ""}>Sync the track inside</button>` : `<button class="btn" data-sa="sync" ${busy || !(info && info.sidecar) ? "disabled" : ""}>Sync</button>`}</div></div>
+        <div class="tool"><h2>Sync to the speech</h2><p>For subtitles that are early, late or drift, by any amount. Listens to the episode and moves each line to where it's said. A few minutes the first time, then instant.</p>
+          ${syncSources(info, busy)}</div>
         <div class="tool"><h2>Shift by hand</h2><p>Lines show up too early? Use a positive number to delay them.</p>
           <div class="shiftbox"><button class="btn small" data-nudge="-0.5">−0.5</button><input type="number" id="shiftSec" step="0.1" value="0" class="num"><button class="btn small" data-nudge="0.5">+0.5</button><button class="btn small" data-sa="shift" ${busy || none ? "disabled" : ""}>Apply</button></div></div>
         <div class="tool"><h2>Generate with Whisper</h2><p>Writes English subtitles from the audio on this Mac. Takes a few minutes, no internet needed.</p>
@@ -274,11 +274,21 @@ function renderSubtitles() {
     </div>`;
   const vf = $("#vfilter");
   vf.oninput = () => { S.vfilter = vf.value; renderSubtitles(); const n = $("#vfilter"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); };
-  el.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => { S.video = b.dataset.v; S.vinfo = null; S.results = null; renderSubtitles(); loadVideoInfo(); }));
+  el.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => { S.video = b.dataset.v; S.vinfo = null; S.results = null; S.syncSrc = null; renderSubtitles(); loadVideoInfo(); }));
   el.querySelectorAll("[data-nudge]").forEach((b) => (b.onclick = () => { const i = $("#shiftSec"); i.value = (Math.round((+i.value + +b.dataset.nudge) * 10) / 10).toFixed(1); }));
   el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = () => act(() => api(`/api/jobs/${b.dataset.cancel}/cancel`, { method: "POST" }))));
   el.querySelectorAll("[data-sa]").forEach((b) => (b.onclick = () => subAction(b.dataset.sa, b)));
   el.querySelectorAll("[data-use]").forEach((b) => (b.onclick = () => subAction("fetch", b)));
+}
+function syncSources(info, busy) {
+  if (!info) return "";
+  const opts = [
+    ...info.srt_files.map((p) => `<option value="file:${esc(p)}">${esc(p.split("/").pop())}</option>`),
+    ...info.embedded.filter((t) => !t.ours).map((t) => `<option value="track:${t.index}">Track inside the file${t.title ? " · " + esc(t.title) : ""}</option>`),
+  ];
+  if (!opts.length) return `<p class="hint">No subtitles to sync yet. Find or generate some first.</p>`;
+  const sel = S.syncSrc && opts.some((o) => o.includes(`value="${esc(S.syncSrc)}"`)) ? S.syncSrc : null;
+  return `<div class="inline"><select id="syncSrc" style="flex:1 1 160px;min-width:0" onchange="S.syncSrc=this.value">${opts.map((o) => sel && o.includes(`value="${esc(sel)}"`) ? o.replace("<option", "<option selected") : o).join("")}</select><button class="btn" data-sa="sync" ${busy ? "disabled" : ""}>Sync</button></div>`;
 }
 function resultsTable(results, busy) {
   if (!results.results.length) return `<p class="hint">Nothing found for this episode.</p>`;
@@ -296,7 +306,10 @@ async function subAction(what, btn) {
     return;
   }
   const body = { path };
-  if (what === "sync" && btn.dataset.stream) body.stream_index = +btn.dataset.stream;
+  if (what === "sync") {
+    const v = $("#syncSrc").value;
+    if (v.startsWith("track:")) body.stream_index = +v.slice(6); else body.srt_file = v.slice(5);
+  }
   if (what === "shift") { body.seconds = +$("#shiftSec").value; if (!body.seconds) return toast("Enter how many seconds to shift", true); }
   if (what === "fetch") { body.file_id = +btn.dataset.use; body.hash_match = !!btn.dataset.hash; }
   await act(() => api(`/api/subtitles/${what}`, { method: "POST", body }), "Started. Progress shows here and in Activity");

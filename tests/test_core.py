@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import srt  # noqa: E402
 
-from upnext import credits, names, subtitles  # noqa: E402
+from upnext import align, credits, names, subtitles  # noqa: E402
 
 
 def test_names():
@@ -63,9 +63,61 @@ def test_lines_from_words():
     assert lines[1][0] == 3.0
 
 
+def _episode(n=200, seed=1):
+    """Fake subtitle lines with distinct wording, one every ~12s."""
+    import random
+    rng = random.Random(seed)
+    vocab = ["winter", "dragon", "throne", "north", "crow", "wall", "king", "queen", "gold", "sword",
+             "fire", "blood", "ship", "lord", "lady", "night", "wolf", "lion", "debt", "dagger", "hand", "maester"]
+    return [(10 + i * 12.0, " ".join(rng.choice(vocab) for _ in range(6))) for i in range(n)]
+
+
+def _speak(lines, mapping):
+    """What Whisper would hear: each line's words at mapping(line start), 0.3s apart."""
+    out = []
+    for t, text in lines:
+        v = mapping(t)
+        if v is None:
+            continue
+        for j, w in enumerate(text.split()):
+            out.append({"start": v + 0.3 * j, "end": v + 0.3 * j + 0.25, "word": " " + w})
+    return out
+
+
+def test_align_constant_offset():
+    lines = _episode()
+    r = align.fit(align.anchors(_speak(lines, lambda t: t - 83.85), lines))
+    assert r["kind"] == "linear" and abs(r["offset"] + 83.85) < 0.05 and r["median"] < 0.05
+
+
+def test_align_speed():
+    lines = _episode()
+    r = align.fit(align.anchors(_speak(lines, lambda t: t * 1.042709 + 2.0), lines))  # 25 vs 23.976 fps
+    assert r["kind"] == "linear" and abs(r["speed"] - 1.042709) < 0.001 and r["p90"] < 0.1
+
+
+def test_align_cut():
+    lines = _episode()
+    # a 40s scene missing from the video at the 20 minute mark: later lines are 40s earlier
+    r = align.fit(align.anchors(_speak(lines, lambda t: t if t < 1200 else (None if t < 1240 else t - 40)), lines))
+    assert r["kind"] == "piecewise"
+    assert abs(float(r["map"](600)) - 600) < 0.5 and abs(float(r["map"](2000)) - 1960) < 0.5
+
+
+def test_align_wrong_episode():
+    assert align.fit(align.anchors(_speak(_episode(seed=2), lambda t: t), _episode(seed=1))) is None
+
+
+def test_ads():
+    assert align.is_ad('<font color="#ffff00">www.tvsubtitles.net</font>')
+    assert align.is_ad("Subtitles by explosiveskull")
+    assert not align.is_ad("Bad things are coming.")
+
+
 if __name__ == "__main__":
     import tempfile
     test_names(); test_credits_length(); test_wrap(); test_lines_from_words()
+    test_align_constant_offset(); test_align_speed(); test_align_cut(); test_align_wrong_episode(); test_ads()
     with tempfile.TemporaryDirectory() as d:
         test_shift(Path(d))
     print("all passed")

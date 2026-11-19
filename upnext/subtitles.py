@@ -22,7 +22,8 @@ from pathlib import Path
 import requests
 import srt
 
-from . import config, jobs, names
+from . import align, config, jobs, names
+from .config import DATA_DIR
 from .credits import ffmpeg, ffprobe
 
 OS_API = "https://api.opensubtitles.com/api/v1"
@@ -82,11 +83,19 @@ def existing_sidecar(video):
     return None
 
 
+def srt_files(video):
+    """Every .srt next to the video that belongs to it: Show.S01E01.srt, .en.srt, .English.srt…"""
+    v = Path(video)
+    return sorted((p for p in v.parent.glob("*.srt") if p.name.startswith(v.stem + ".")),
+                  key=lambda p: (p != sidecar(video), p.name))
+
+
 def describe(video):
     """Subtitle state for the UI. Only tracks that can actually be used are listed."""
     eng = english_tracks(video, full_only=True)
     side = existing_sidecar(video)
     return {
+        "srt_files": [str(p) for p in srt_files(video)],
         "embedded": [{"index": s["index"], "codec": s.get("codec_name"), "title": s["tags"].get("title") or s["tags"].get("name") or "",
                       "ours": is_ours(s)} for s in eng],
         "sidecar": str(side) if side else None,
@@ -189,8 +198,44 @@ MAX_OFFSET = 60
 
 
 def sync(job, video, srt_in, srt_out):
-    """Line the subtitles up with the speech in the audio (ffsubsync). Returns the offset it found.
-    Leaves srt_out untouched when ffsubsync's answer can't be trusted."""
+    """Line the subtitles up with what's said. Matches lines to a Whisper transcript
+    (handles any offset, speed differences and cuts), and falls back to ffsubsync
+    when too few lines can be matched. Returns the offset in seconds.
+    srt_out is only written when the result can be trusted."""
+    subs = [s for s in srt.parse(_decode(Path(srt_in).read_bytes())) if not align.is_ad(s.content)]
+    if not subs:
+        raise RuntimeError("That subtitle file is empty or isn't an .srt")
+    words = transcribe_words(job, video, "Listening to the episode")
+    job.update(None, "Matching the subtitles to the speech")
+    result = align.fit(align.anchors(words, [(s.start.total_seconds(), s.content) for s in subs]))
+    if not result:
+        job.update(None, "Few lines matched the speech, trying ffsubsync instead")
+        try:
+            return _ffsubsync(job, video, srt_in, srt_out)
+        except RuntimeError as e:
+            raise RuntimeError(f"These subtitles don't match what's said in this video. They may be for a "
+                               f"different episode or cut. ({e})")
+    fn, out = result["map"], []
+    for s in subs:
+        start, end = float(fn(s.start.total_seconds())), float(fn(s.end.total_seconds()))
+        if start < 0:
+            continue  # spoken before this cut of the video begins
+        out.append(srt.Subtitle(0, datetime.timedelta(seconds=start), datetime.timedelta(seconds=max(end, start + 0.3)),
+                                s.content))
+    Path(srt_out).write_text(srt.compose(out, reindex=True), encoding="utf-8")
+    msg = f"Synced: moved {result['offset']:+.2f}s"
+    if result["kind"] == "piecewise":
+        msg = f"Synced: the offset changes partway (a cut), followed it around {result['offset']:+.1f}s"
+    elif abs(result["speed"] - 1) > 0.0005:
+        msg += f" and fixed the speed ({result['speed']:.4f}x)"
+    msg += f". {result['anchors']} lines matched, typically within {result['median']:.2f}s"
+    job.update(None, msg)
+    return result["offset"]
+
+
+def _ffsubsync(job, video, srt_in, srt_out):
+    """ffsubsync matches speech activity rather than words. Only used when Whisper
+    can't match enough lines, and refused when it stops at its search limit."""
     exe = Path(sys.executable).with_name("ffsubsync")
     tmp = Path(srt_out).with_suffix(".sync.tmp.srt")
     job.update(None, "Syncing to the audio", "Listening for speech and matching it to the subtitle timings")
@@ -261,14 +306,37 @@ def use_gpu():
         return False
 
 
-def generate(job, video, srt_out):
-    """Transcribe the English audio locally: MLX on Apple Silicon, faster-whisper elsewhere."""
+TRANSCRIPTS = DATA_DIR / "transcripts"
+
+
+def transcribe_words(job, video, label="Transcribing"):
+    """Word-level transcript of the episode: [{"start", "end", "word"}].
+    Cached per file and model, so syncing then generating (or syncing twice)
+    listens to the episode once. Keyed on duration, not size, so embedding
+    subtitles into the file doesn't throw the transcript away."""
+    import hashlib
+
     model_name = config.load()["whisper_model"]
     duration = streams(video)[1] or 1
+    key = hashlib.sha1(f"{Path(video).resolve()}|{duration:.1f}|{model_name}".encode()).hexdigest()[:20]
+    cache = TRANSCRIPTS / f"{key}.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text())
+        except json.JSONDecodeError:
+            pass
     job.update(0, "Reading the audio", "")
     audio = _audio_16k(video)
-    segments = _transcribe_gpu(job, audio, model_name, duration) if use_gpu() else \
-        _transcribe_cpu(job, audio, model_name, duration)
+    run = _transcribe_gpu if use_gpu() else _transcribe_cpu
+    words = run(job, audio, model_name, duration, label)
+    TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(words))
+    return words
+
+
+def generate(job, video, srt_out):
+    """Transcribe the English audio locally: MLX on Apple Silicon, faster-whisper elsewhere."""
+    segments = lines_from_words(transcribe_words(job, video))
     subs = []
     for start, end, text in segments:
         text = text.strip()
@@ -281,26 +349,26 @@ def generate(job, video, srt_out):
     return len(subs)
 
 
-def _transcribe_cpu(job, audio, model_name, duration):
+def _transcribe_cpu(job, audio, model_name, duration, label):
     from faster_whisper import WhisperModel
 
     model_name = "large-v3-turbo" if model_name == "turbo" else model_name
     job.update(0, f"Loading the {model_name} speech model", "The first time downloads it")
     model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
-    job.update(0, "Transcribing the audio", "")
+    job.update(0, label, "")
     segments, _ = model.transcribe(audio, language="en", vad_filter=True, beam_size=5, word_timestamps=True)
     words = []
     for seg in segments:
         words += [{"start": w.start, "end": w.end, "word": w.word} for w in (seg.words or [])]
-        job.update(seg.end / duration, f"Transcribing · {int(seg.end) // 60} of {int(duration) // 60} min")
-    return lines_from_words(words)
+        job.update(seg.end / duration, f"{label} · {int(seg.end) // 60} of {int(duration) // 60} min")
+    return words
 
 
 class _Progress:
     """Stands in for tqdm inside mlx_whisper, which is the only way it reports progress."""
 
-    def __init__(self, job, duration):
-        self.job, self.duration = job, duration
+    def __init__(self, job, duration, label):
+        self.job, self.duration, self.label = job, duration, label
 
     def tqdm(self, total=None, **_):
         outer = self
@@ -318,12 +386,12 @@ class _Progress:
                 self.n += k
                 done = self.n / total if total else 0
                 mins = int(done * outer.duration) // 60
-                outer.job.update(done, f"Transcribing on the GPU · {mins} of {int(outer.duration) // 60} min")
+                outer.job.update(done, f"{outer.label} · {mins} of {int(outer.duration) // 60} min")
 
         return Bar()
 
 
-def _transcribe_gpu(job, audio, model_name, duration):
+def _transcribe_gpu(job, audio, model_name, duration, label):
     import mlx_whisper
 
     # the package exports a transcribe() function that hides the transcribe module, so look the module up
@@ -332,13 +400,14 @@ def _transcribe_gpu(job, audio, model_name, duration):
     repo = MLX_MODELS.get(model_name, MLX_MODELS["turbo"])
     job.update(0, f"Loading the {model_name} speech model", "The first time downloads it")
     original = mt.tqdm
-    mt.tqdm = _Progress(job, duration)
+    mt.tqdm = _Progress(job, duration, label)
     try:
         result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, language="en", verbose=False,
                                         condition_on_previous_text=False, word_timestamps=True)
     finally:
         mt.tqdm = original
-    return lines_from_words([w for s in result["segments"] for w in s.get("words", [])])
+    return [{"start": w["start"], "end": w["end"], "word": w["word"]}
+            for s in result["segments"] for w in s.get("words", [])]
 
 
 def lines_from_words(words, max_chars=84, max_seconds=6.0, pause=0.6):
@@ -496,20 +565,25 @@ def queue_fetch(video, file_id, hash_match=False):
     return jobs.submit("subtitles", "subtitles", _title(video, "Subtitles"), run, key=f"subs:{video}")
 
 
-def queue_sync(video, stream_index=None):
-    """Fix out-of-sync subtitles: the .srt next to the video, or an embedded track."""
+def queue_sync(video, stream_index=None, srt_file=None):
+    """Fix out-of-sync subtitles: a chosen .srt, the .srt next to the video, or an embedded track.
+    The result goes to Show.S01E01.en.srt (and inside the file); the source is never overwritten
+    unless it is that .en.srt."""
     def run(job):
+        import tempfile
         out = sidecar(video)
         if stream_index is not None:
-            extract_embedded(video, stream_index, out)
+            src = Path(tempfile.mkdtemp()) / "track.srt"
+            extract_embedded(video, stream_index, src)
         else:
-            src = existing_sidecar(video)
-            if not src:
+            src = Path(srt_file) if srt_file else existing_sidecar(video)
+            if not src or not src.exists():
                 raise RuntimeError("No subtitles to sync. Find or generate some first")
-        offset = sync(job, video, out if stream_index is not None else src, out)
+        sync(job, video, src, out)
+        result = job.message
         if config.load()["embed_subtitles"] and Path(video).suffix.lower() in EMBEDDABLE:
             embed(job, video, out)
-        job.update(1, f"Synced ({offset:+.2f}s)")
+        job.update(1, result)
 
     return jobs.submit("subtitles", "sync", _title(video, "Sync"), run, key=f"subs:{video}")
 

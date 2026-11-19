@@ -32,8 +32,16 @@ A running log. What Claude generated, what was wrong with it, how it was caught,
 
 **Picture subtitles counted as "already has English".** The S07E04 MP4 has 14 English tracks: 12 DVD picture tracks, a one-line forced track, and nothing with real dialogue. Fix automatically checked the language tag only, so every press said "Already has English subtitles inside" and did nothing. Fix: only text tracks with at least 50 lines count.
 
-**Trusted ffsubsync when it was pinned at its limit.** My .srt was 84 seconds late. ffsubsync searches 60 seconds by default, returned -59.99, and the app wrote that as a fix, still 24 seconds off, and embedded it. Run again, it "corrected" the frame rate instead and spread the error from 38 to 120 seconds across the episode. Caught by measuring against the speech: Whisper transcript, 228 lines matched to the .srt, a straight-line fit gave -83.85s with no drift, and 0.14s median error after correcting. Fix in the app: `--no-fix-framerate`, and a result at the limit is refused with nothing changed. The Whisper-anchored fit is the better sync engine and isn't in the app yet.
+**Trusted ffsubsync when it was pinned at its limit.** My .srt was 84 seconds late. ffsubsync searches 60 seconds by default, returned -59.99, and the app wrote that as a fix, still 24 seconds off, and embedded it. Run again, it "corrected" the frame rate instead and spread the error from 38 to 120 seconds across the episode. Caught by measuring against the speech: Whisper transcript, 228 lines matched to the .srt, a straight-line fit gave -83.85s with no drift, and 0.14s median error after correcting. Fix in the app: `--no-fix-framerate`, and a result at the limit is refused with nothing changed. The Whisper-anchored fit is now the app's sync engine (next entry).
 
 **MP4 track names are stored differently.** MKV keeps the track name as `title`, MP4 as `name` or `handler_name`, and a plain remux drops `name`. So the app couldn't recognise its own earlier track and left the wrong one in the file next to the new one. Fix: check all three tags, and write `handler_name` too, which survives a remux.
 
 **Sync wrote its copy before it knew it worked.** It copied the .srt to .en.srt, then synced in place, so a failed sync left an unsynced .en.srt that VLC would load. Now it reads the original and only writes .en.srt on success.
+
+## 2026-11-19, Whisper-anchored sync
+
+Built the method from the S07E04 fix into the Sync button (`align.py`). Lines are matched to the Whisper transcript on their first four words, only when those words are unique to one line, then a straight line is fitted with outliers dropped. If that fits badly, a piecewise offset handles cuts. Tested on synthetic offsets, a speed change, a 40 second cut and a wrong episode, then on the real file: -83.80s against the -83.85s found by hand, all 495 lines within 0.3s of the verified version.
+
+**My first comparison said one line was 895 seconds off.** It wasn't. The check looked lines up by their text, and lines like "Yes." appear more than once. Compared in order, every line matched. Worth remembering before trusting or panicking about a "max error".
+
+**Sync picked the file for me.** With both `.srt` and `.en.srt` next to the video it always took `.en.srt`, which was the wrong one when I wanted mine synced. The Sync card now has a picker with every `.srt` for that episode and any text track inside it.
